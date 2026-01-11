@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createYouTubeClient, YouTubeClient } from "@/lib/youtube/client";
-import { MockEngine } from "@/lib/engine/mock-engine";
+import { createAnalysisEngine, isMockEngineEnabled } from "@/lib/engine/factory";
 import type { VideoAnalysis, AnalyzedComment, TimeSeriesPoint, ScatterDataPoint } from "@/types";
 
 export const runtime = "nodejs";
@@ -30,10 +30,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
     }
 
-    // Check if we should use mock engine
-    const useMockEngine = process.env.USE_MOCK_ENGINE === "true";
-
-    if (useMockEngine) {
+    // Check if we should use mock data (complete dataset)
+    if (isMockEngineEnabled()) {
       // Use mock data for development
       const { generateMockDataset } = await import("@/lib/mock-data/generators");
       const mockData = generateMockDataset(body.maxComments || 20);
@@ -41,9 +39,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(mockData);
     }
 
-    // Real YouTube API integration
+    // Real YouTube API integration with sentiment analysis
     const youtubeClient = createYouTubeClient();
-    const engine = new MockEngine(); // TODO: Replace with LLMEngine in Phase 5
+    const engine = createAnalysisEngine(); // Auto-selects engine based on environment
 
     // Fetch video metadata
     const video = await youtubeClient.getVideo(videoId);
