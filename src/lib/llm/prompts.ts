@@ -4,7 +4,7 @@
  * These prompts are designed to return structured JSON for batch processing.
  */
 
-import type { YouTubeComment } from "@/types";
+import type { YouTubeComment, AxisProfile } from "@/types";
 
 /**
  * System prompt for sentiment analysis
@@ -142,4 +142,107 @@ Return a JSON object with "reason" first to think before scoring:
 Emotion tags: "joy", "anger", "sadness", "fear", "surprise", "disgust", "empathy", "supportive", "funny", "critical", "grateful", "frustrated", "enthusiastic", "analytical", "sarcasm", "confused", "disappointed", "excited"
 
 Return only the JSON object:`;
+}
+
+/**
+ * NEW: Axis-based System Prompt for Stance Analysis
+ */
+export const AXIS_SYSTEM_PROMPT = `You are an advanced Stance Analysis agent for YouTube comments.
+
+Your task is to determine each comment's stance (Support/Oppose/Neutral/Unknown) toward the video's MAIN AXIS.
+
+### CORE CONCEPT: AXIS vs CREATOR
+- DO NOT judge sentiment toward the creator as a person.
+- JUDGE the commenter's position on the MAIN AXIS (the central claim or topic).
+
+### OUTPUT SCHEMA:
+{
+  "comments": [
+    {
+      "commentId": "...",
+      "label": "Support" | "Oppose" | "Neutral" | "Unknown",
+      "confidence": 0.85,
+      "axisEvidence": "User agrees with [creator's position] by saying '...'",
+      "replyRelation": "agree" | "disagree" | "clarify" | "question" | "unrelated",
+      "speechAct": "assertion" | "question" | "joke" | "sarcasm" | "insult" | "praise" | "other",
+      "score": 0.8,
+      "emotions": ["supportive"],
+      "isSarcasm": false,
+      "reason": "Brief explanation"
+    }
+  ]
+}
+
+### STANCE LABELS:
+- "Support": Commenter AGREES with the creator's position on the axis
+- "Oppose": Commenter DISAGREES with the creator's position on the axis
+- "Neutral": Comment is about the topic but doesn't take a clear stance
+- "Unknown": Cannot determine stance (off-topic, unclear, insufficient context)
+
+### REPLY LOGIC:
+- If comment has "parentText", analyze the relationship to parent first
+- replyRelation values:
+  - "agree": Affirms or builds on parent's point
+  - "disagree": Contradicts or argues against parent
+  - "clarify": Adds context or explanation
+  - "question": Asks for more info
+  - "unrelated": Changes topic
+
+### SCORE CONVERSION (for backward compatibility):
+- Support → score: +0.7 to +1.0
+- Neutral → score: -0.3 to +0.3
+- Oppose → score: -1.0 to -0.7
+- Unknown → score: 0.0
+
+### CRITICAL RULES:
+1. If context is unclear, use "Unknown" - do NOT guess
+2. Sarcasm detection: Positive words used to mock = "Oppose" + isSarcasm: true
+3. Thread awareness: Parent stance affects child stance interpretation
+4. Evidence: Always cite specific phrases from the comment in axisEvidence
+
+Return ONLY valid JSON. No preamble. No trailing commas.`;
+
+/**
+ * NEW: Create Axis-based batch prompt
+ */
+export function createAxisBatchPrompt(
+  comments: YouTubeComment[],
+  axisProfile: AxisProfile,
+  videoContext?: { title: string; channelName: string; description?: string; summary?: string }
+): string {
+  const contextInfo = `### AXIS PROFILE (PRIMARY REFERENCE)
+Video ID: ${axisProfile.videoId}
+Main Axis: "${axisProfile.mainAxis}"
+Creator's Position: "${axisProfile.creatorPosition}"
+${axisProfile.targetOfCriticism ? `Target of Criticism: "${axisProfile.targetOfCriticism}"` : ""}
+${axisProfile.supportedValues ? `Supported Values: "${axisProfile.supportedValues}"` : ""}
+
+### VIDEO METADATA
+Creator: "${videoContext?.channelName || "Unknown"}"
+Title: "${videoContext?.title || "Unknown"}"
+${videoContext?.summary ? `Summary: ${videoContext.summary}` : ""}
+
+`;
+
+  const commentsJson = comments.map((c) => ({
+    commentId: c.id,
+    author: c.author,
+    text: c.text,
+    parentText: c.parentText || null,
+    parentId: c.parentId || null,
+  }));
+
+  return `${contextInfo}
+Analyze ${comments.length} comments based on their stance toward the MAIN AXIS.
+
+TASK:
+1. For each comment, determine if the user supports or opposes the creator's position on the axis
+2. If the comment is a reply (has parentText), first analyze replyRelation to parent
+3. Provide evidence from the comment text in axisEvidence
+4. Assign confidence (0.0-1.0) based on clarity of stance
+
+Comments to analyze:
+${JSON.stringify(commentsJson, null, 2)}
+
+Return JSON following the schema in the system prompt.`;
 }

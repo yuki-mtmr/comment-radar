@@ -2,9 +2,10 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ThumbsUp, AlertCircle, Smile, Frown, Meh } from "lucide-react";
+import { ThumbsUp, AlertCircle, Smile, Frown, Meh, HelpCircle, Target } from "lucide-react";
 
 import { useLanguage } from "@/lib/i18n/context";
+import type { StanceLabel } from "@/types";
 
 interface Comment {
   id: string;
@@ -15,6 +16,11 @@ interface Comment {
   sentiment: number; // -1.0 to 1.0
   emotions: string[];
   isSarcasm: boolean;
+  // New axis-based fields
+  label?: StanceLabel;
+  confidence?: number;
+  axisEvidence?: string;
+  replyRelation?: string;
 }
 
 interface CommentListProps {
@@ -42,6 +48,43 @@ export function CommentList({ comments, maxDisplay = 10 }: CommentListProps) {
     if (sentiment > 0.3) return "bg-sentiment-positive/20 text-sentiment-positive border-sentiment-positive/30";
     if (sentiment < -0.3) return "bg-sentiment-negative/20 text-sentiment-negative border-sentiment-negative/30";
     return "bg-sentiment-neutral/20 text-sentiment-neutral border-sentiment-neutral/30";
+  };
+
+  // NEW: Stance label helpers
+  const getStanceIcon = (label: StanceLabel) => {
+    switch (label) {
+      case "Support":
+        return <Target className="w-4 h-4 text-green-500" />;
+      case "Oppose":
+        return <Frown className="w-4 h-4 text-red-500" />;
+      case "Neutral":
+        return <Meh className="w-4 h-4 text-gray-400" />;
+      case "Unknown":
+        return <HelpCircle className="w-4 h-4 text-gray-500" />;
+    }
+  };
+
+  const getStanceLabel = (label: StanceLabel): string => {
+    const labels = {
+      Support: language === "ja" ? "賛成" : "Support",
+      Oppose: language === "ja" ? "反対" : "Oppose",
+      Neutral: language === "ja" ? "中立" : "Neutral",
+      Unknown: language === "ja" ? "不明" : "Unknown",
+    };
+    return labels[label];
+  };
+
+  const getStanceColor = (label: StanceLabel): string => {
+    switch (label) {
+      case "Support":
+        return "bg-green-500/20 text-green-400 border-green-500/30";
+      case "Oppose":
+        return "bg-red-500/20 text-red-400 border-red-500/30";
+      case "Neutral":
+        return "bg-gray-500/20 text-gray-400 border-gray-500/30";
+      case "Unknown":
+        return "bg-gray-600/20 text-gray-500 border-gray-600/30";
+    }
   };
 
   const formatDate = (dateString: string): string => {
@@ -95,14 +138,36 @@ export function CommentList({ comments, maxDisplay = 10 }: CommentListProps) {
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {getSentimentIcon(comment.sentiment)}
-                  <Badge
-                    variant="outline"
-                    className={`${getSentimentColor(comment.sentiment)} text-xs`}
-                  >
-                    {getSentimentLabel(comment.sentiment)}
-                  </Badge>
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  {/* Show stance label if available (Axis-based analysis) */}
+                  {comment.label ? (
+                    <>
+                      {getStanceIcon(comment.label)}
+                      <Badge
+                        variant="outline"
+                        className={`${getStanceColor(comment.label)} text-xs`}
+                        title={comment.axisEvidence || "Stance toward video's main axis"}
+                      >
+                        {getStanceLabel(comment.label)}
+                        {comment.confidence && (
+                          <span className="ml-1 opacity-70">
+                            {Math.round(comment.confidence * 100)}%
+                          </span>
+                        )}
+                      </Badge>
+                    </>
+                  ) : (
+                    /* Fallback to sentiment if no stance label */
+                    <>
+                      {getSentimentIcon(comment.sentiment)}
+                      <Badge
+                        variant="outline"
+                        className={`${getSentimentColor(comment.sentiment)} text-xs`}
+                      >
+                        {getSentimentLabel(comment.sentiment)}
+                      </Badge>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -125,6 +190,15 @@ export function CommentList({ comments, maxDisplay = 10 }: CommentListProps) {
                     >
                       <AlertCircle className="w-3 h-3 mr-1" />
                       {t.comments.sarcasm}
+                    </Badge>
+                  )}
+                  {comment.replyRelation && (
+                    <Badge
+                      variant="outline"
+                      className="text-xs bg-blue-500/20 text-blue-400 border-blue-500/30"
+                      title="Relation to parent comment"
+                    >
+                      ↳ {comment.replyRelation}
                     </Badge>
                   )}
                 </div>

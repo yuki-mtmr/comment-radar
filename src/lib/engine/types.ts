@@ -40,6 +40,11 @@ export interface AnalysisEngine {
   generateContextSummary(video: { title: string; channelName: string; description?: string; transcript?: string }): Promise<string>;
 
   /**
+   * Generate Axis Profile for stance-based analysis
+   */
+  generateAxisProfile?(video: { id: string; title: string; channelName: string; description?: string; transcript?: string }): Promise<import("@/types").AxisProfile>;
+
+  /**
    * Get engine configuration
    */
   getConfig(): AnalysisEngineConfig;

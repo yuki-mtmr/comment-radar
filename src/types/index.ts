@@ -54,6 +54,22 @@ export type EmotionTag =
   | "disappointed"
   | "excited";
 
+// Axis-Based Stance Analysis Types
+export type StanceLabel = "Support" | "Oppose" | "Neutral" | "Unknown";
+
+export type ReplyRelation = "agree" | "disagree" | "clarify" | "question" | "unrelated";
+
+export type SpeechAct = "assertion" | "question" | "joke" | "sarcasm" | "insult" | "praise" | "other";
+
+export interface AxisProfile {
+  videoId: string;
+  mainAxis: string; // e.g., "この教育方針は有効か"
+  creatorPosition: string; // e.g., "座学より実践を重視すべき"
+  targetOfCriticism?: string; // e.g., "理論ばかりで行動しない人"
+  supportedValues?: string; // e.g., "実践的な学び、行動力"
+  generatedAt: string;
+}
+
 export interface SentimentAnalysis {
   commentId: string;
   score: SentimentScore;
@@ -61,6 +77,12 @@ export interface SentimentAnalysis {
   emotions: EmotionTag[];
   isSarcasm: boolean;
   reason?: string; // Why this sentiment was assigned
+  // New Axis-based fields
+  label?: StanceLabel; // Stance toward the main axis
+  confidence?: number; // 0.0 to 1.0
+  axisEvidence?: string; // Evidence for stance judgment
+  replyRelation?: ReplyRelation; // Relation to parent comment
+  speechAct?: SpeechAct; // Type of speech act
 }
 
 export interface AnalyzedComment extends YouTubeComment {
