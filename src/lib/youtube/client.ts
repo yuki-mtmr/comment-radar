@@ -135,17 +135,19 @@ export class YouTubeClient {
     options?: {
       maxComments?: number;
       order?: "time" | "relevance";
+      includeReplies?: boolean;
     }
   ): Promise<YouTubeComment[]> {
     const maxComments = options?.maxComments || this.maxResults;
     const order = options?.order || "relevance";
+    const includeReplies = options?.includeReplies !== false;
 
     const comments: YouTubeComment[] = [];
     let pageToken: string | undefined;
 
     while (comments.length < maxComments) {
       const url = new URL(`${YOUTUBE_API_BASE}/commentThreads`);
-      url.searchParams.set("part", "snippet");
+      url.searchParams.set("part", "snippet,replies"); // Include replies part
       url.searchParams.set("videoId", videoId);
       url.searchParams.set("order", order);
       url.searchParams.set("maxResults", Math.min(100, maxComments - comments.length).toString());
@@ -156,39 +158,56 @@ export class YouTubeClient {
       }
 
       try {
-        const response = await this.fetchWithTimeout<CommentThreadResponse>(url.toString());
+        const response = await this.fetchWithTimeout<any>(url.toString());
 
         if (!response.items || response.items.length === 0) {
-          break; // No more comments
+          break;
         }
 
         for (const item of response.items) {
-          const comment = item.snippet.topLevelComment;
-          const snippet = comment.snippet;
+          // 1. Add top-level comment
+          const topComment = item.snippet.topLevelComment;
+          const topSnippet = topComment.snippet;
 
           comments.push({
-            id: comment.id,
+            id: topComment.id,
             videoId,
-            author: snippet.authorDisplayName,
-            authorChannelId: snippet.authorChannelId?.value,
-            text: snippet.textDisplay,
-            likeCount: snippet.likeCount,
-            publishedAt: snippet.publishedAt,
-            updatedAt: snippet.updatedAt,
+            author: topSnippet.authorDisplayName,
+            authorChannelId: topSnippet.authorChannelId?.value,
+            text: topSnippet.textDisplay,
+            likeCount: topSnippet.likeCount,
+            publishedAt: topSnippet.publishedAt,
+            updatedAt: topSnippet.updatedAt,
           });
 
-          if (comments.length >= maxComments) {
-            break;
+          if (comments.length >= maxComments) break;
+
+          // 2. Add replies if present in the thread
+          if (includeReplies && item.replies && item.replies.comments) {
+            for (const reply of item.replies.comments) {
+              const replySnippet = reply.snippet;
+              comments.push({
+                id: reply.id,
+                videoId,
+                author: replySnippet.authorDisplayName,
+                authorChannelId: replySnippet.authorChannelId?.value,
+                text: replySnippet.textDisplay,
+                likeCount: replySnippet.likeCount,
+                publishedAt: replySnippet.publishedAt,
+                updatedAt: replySnippet.updatedAt,
+                parentId: topComment.id,
+              });
+
+              if (comments.length >= maxComments) break;
+            }
           }
+
+          if (comments.length >= maxComments) break;
         }
 
         pageToken = response.nextPageToken;
-
-        if (!pageToken) {
-          break; // No more pages
-        }
+        if (!pageToken) break;
       } catch (error) {
-        // If comments are disabled or restricted
         if (this.isCommentsDisabledError(error)) {
           throw this.createError("Comments are disabled for this video", "COMMENTS_DISABLED", 403);
         }

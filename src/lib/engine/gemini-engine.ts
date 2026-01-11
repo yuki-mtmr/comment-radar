@@ -19,12 +19,12 @@ import { SYSTEM_PROMPT, createBatchPrompt, createSingleCommentPrompt } from "@/l
 import { AnalysisError } from "@/types";
 
 const DEFAULT_CONFIG: AnalysisEngineConfig = {
-  batchSize: 20, // Gemini can handle larger batches, but 20 is safe
+  batchSize: 25, // Increased to reduce total request count (RPM bottleneck)
   maxComments: 500,
-  timeoutMs: 30000, // 30 seconds for LLM calls
+  timeoutMs: 30000,
 };
 
-const DEFAULT_MODEL = "gemini-2.0-flash-exp";
+const DEFAULT_MODEL = "gemini-2.0-flash";
 
 interface GeminiResponse {
   id: number;
@@ -92,50 +92,101 @@ export class GeminiEngine implements AnalysisEngine {
 
     const prompt = createBatchPrompt(request.comments, request.videoContext);
 
-    try {
-      const result = await this.model.generateContent(prompt);
-      const response = result.response;
-      const text = response.text();
+    // Simple retry logic for non-quota errors, or specific handling for 429
+    let lastError: any;
+    let attempts = 0;
+    const maxRetries = 3;
 
-      // Parse JSON response
-      const parsedArray = this.parseJSON<GeminiResponse[]>(text);
+    while (attempts < maxRetries) {
+      try {
+        const result = await this.model.generateContent(prompt);
+        const response = result.response;
+        const text = response.text();
 
-      if (!Array.isArray(parsedArray)) {
-        throw new Error("Expected JSON array response from Gemini");
-      }
+        // Parse JSON response
+        const parsedArray = this.parseJSON<GeminiResponse[]>(text);
 
-      // Map to SentimentAnalysis format
-      const analyses: SentimentAnalysis[] = parsedArray.map((item) => {
-        const comment = request.comments.find((c) => c.id === item.commentId);
-        const likeCount = comment?.likeCount || 0;
+        if (!Array.isArray(parsedArray)) {
+          throw new Error("Expected JSON array response from Gemini");
+        }
+
+        // Map to SentimentAnalysis format
+        const analyses: SentimentAnalysis[] = request.comments.map((comment) => {
+          const item = parsedArray.find((p) => p.commentId === comment.id);
+
+          if (!item) {
+            return {
+              commentId: comment.id,
+              score: 0,
+              weightedScore: 0,
+              emotions: ["analytical"] as EmotionTag[],
+              isSarcasm: false,
+              reason: "Gemini skipped this comment in batch analysis",
+            };
+          }
+
+          return {
+            commentId: item.commentId,
+            score: this.clampScore(item.score),
+            weightedScore: this.calculateWeightedScore(item.score, comment.likeCount),
+            emotions: item.emotions as EmotionTag[],
+            isSarcasm: item.isSarcasm,
+            reason: item.reason,
+          };
+        });
+
+        const processingTimeMs = Date.now() - startTime;
+        const tokensUsed = this.estimateTokens(prompt, text);
 
         return {
-          commentId: item.commentId,
-          score: this.clampScore(item.score),
-          weightedScore: this.calculateWeightedScore(item.score, likeCount),
-          emotions: item.emotions as EmotionTag[],
-          isSarcasm: item.isSarcasm,
-          reason: item.reason,
+          analyses,
+          processingTimeMs,
+          tokensUsed,
         };
-      });
+      } catch (error: any) {
+        lastError = error;
+        attempts++;
 
-      const processingTimeMs = Date.now() - startTime;
+        // If we hit an error, we decide whether to retry or fallback
+        const isQuotaError = error.message?.includes("429") || error.message?.includes("quota") || error.status === 429;
 
-      // Estimate tokens (Gemini doesn't provide exact count in response)
-      const tokensUsed = this.estimateTokens(prompt, text);
+        // If it's a quota error OR we've exhausted all retries, return fallback results
+        if (isQuotaError || attempts >= maxRetries) {
+          console.error(`Gemini API Error (${attempts} attempts): ${error.message}. Falling back to neutral analysis.`);
 
-      return {
-        analyses,
-        processingTimeMs,
-        tokensUsed,
-      };
-    } catch (error) {
-      throw new AnalysisError(
-        `Failed to analyze batch: ${error instanceof Error ? error.message : "Unknown error"}`,
-        "GEMINI_BATCH_ERROR",
-        error
-      );
+          const analyses: SentimentAnalysis[] = request.comments.map((comment) => ({
+            commentId: comment.id,
+            score: 0,
+            weightedScore: 0,
+            emotions: ["neutral"] as EmotionTag[],
+            isSarcasm: false,
+            reason: isQuotaError
+              ? "Analysis skipped due to API quota limits."
+              : `Analysis failed after ${attempts} attempts: ${error.message}`,
+          }));
+
+          return {
+            analyses,
+            processingTimeMs: Date.now() - startTime,
+            tokensUsed: 0,
+            isPartial: true,
+          };
+        }
+
+        // Otherwise, wait and retry
+        // Wait before retry (exponential backoff)
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempts) * 1000));
+        continue;
+      }
     }
+
+    // This part should theoretically not be reached due to the fallback above,
+    // but kept for type safety.
+    throw new AnalysisError(
+      `Failed to analyze batch: ${lastError?.message || "Unknown error"}`,
+      "GEMINI_BATCH_ERROR",
+      lastError
+    );
   }
 
   getConfig(): AnalysisEngineConfig {
@@ -149,19 +200,38 @@ export class GeminiEngine implements AnalysisEngine {
   // Private helper methods
 
   private parseJSON<T>(text: string): T {
-    // Remove markdown code blocks if present
+    // 1. Try direct parse first
     let cleanText = text.trim();
+    try {
+      return JSON.parse(cleanText);
+    } catch {
+      // Ignore and continue to more robust extraction
+    }
 
-    // Remove ```json and ``` markers
-    cleanText = cleanText.replace(/^```json\s*/i, "").replace(/```\s*$/,
+    // 2. Remove markdown code blocks if present
+    // Matches ```json [ANYTHING] ``` or ``` [ANYTHING] ```
+    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
+    const match = cleanText.match(codeBlockRegex);
+    if (match && match[1]) {
+      cleanText = match[1].trim();
+    }
 
- "");
-    cleanText = cleanText.trim();
+    // 3. Last resort: find first [ or { and last ] or }
+    if (!cleanText.startsWith("[") && !cleanText.startsWith("{")) {
+      const startIndex = cleanText.search(/[\[\{]/);
+      const endIndex = Math.max(
+        cleanText.lastIndexOf("]"),
+        cleanText.lastIndexOf("}")
+      );
+      if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+        cleanText = cleanText.slice(startIndex, endIndex + 1);
+      }
+    }
 
     try {
       return JSON.parse(cleanText);
     } catch (error) {
-      throw new Error(`Failed to parse JSON response: ${cleanText.slice(0, 200)}...`);
+      throw new Error(`Failed to parse JSON response: ${cleanText.slice(0, 100)}...`);
     }
   }
 

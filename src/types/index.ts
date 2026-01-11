@@ -48,6 +48,7 @@ export type EmotionTag =
   | "analytical"
   | "sarcasm"
   | "confused"
+  | "neutral"
   | "disappointed"
   | "excited";
 
@@ -65,6 +66,7 @@ export interface AnalyzedComment extends YouTubeComment {
   weightedScore: SentimentScore;
   emotions: EmotionTag[];
   isSarcasm: boolean;
+  isRepeatUser?: boolean;
 }
 
 // Aggregated Analytics Types
@@ -73,6 +75,7 @@ export interface SentimentDistribution {
   neutral: number;
   negative: number;
   total: number;
+  uniqueUsers: number;
 }
 
 export interface TimeSeriesPoint {
@@ -117,6 +120,7 @@ export interface BatchAnalysisResponse {
   analyses: SentimentAnalysis[];
   processingTimeMs: number;
   tokensUsed?: number;
+  isPartial?: boolean;
 }
 
 // Error Types

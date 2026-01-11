@@ -70,10 +70,20 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      // Merge sentiment data with comments
+      // Merge sentiment data with comments and detect repeat users
+      const seenUserIds = new Set<string>();
       for (let j = 0; j < batch.length; j++) {
         const comment = batch[j];
         const analysis = result.analyses[j];
+
+        if (!analysis) {
+          console.warn(`No analysis result for comment ${comment.id} at index ${j}`);
+          continue;
+        }
+
+        const userId = comment.authorChannelId || comment.author;
+        const isRepeatUser = seenUserIds.has(userId);
+        seenUserIds.add(userId);
 
         analyzedComments.push({
           ...comment,
@@ -81,20 +91,44 @@ export async function POST(request: NextRequest) {
           weightedScore: analysis.weightedScore,
           emotions: analysis.emotions,
           isSarcasm: analysis.isSarcasm,
+          isRepeatUser,
         });
+      }
+
+      // Add a delay between batches to stay under 15 RPM (free tier limit)
+      if (i + batchSize < comments.length) {
+        await new Promise(resolve => setTimeout(resolve, 3500));
       }
     }
 
-    // Calculate distribution
-    const positive = analyzedComments.filter((c) => c.sentiment > 0.2).length;
-    const neutral = analyzedComments.filter((c) => c.sentiment >= -0.2 && c.sentiment <= 0.2).length;
-    const negative = analyzedComments.filter((c) => c.sentiment < -0.2).length;
+    // Calculate unique users across all comments
+    const allUniqueUsers = new Set(analyzedComments.map(c => c.authorChannelId || c.author));
+
+    // Calculate distribution with bias reduction
+    // We give slightly less weight (0.5x) to multiple comments from the same user
+    // to prevent a single user from dominating the sentiment.
+    let positiveWeight = 0;
+    let neutralWeight = 0;
+    let negativeWeight = 0;
+
+    analyzedComments.forEach(c => {
+      const weight = c.isRepeatUser ? 0.5 : 1.0;
+      if (c.sentiment > 0.2) positiveWeight += weight;
+      else if (c.sentiment < -0.2) negativeWeight += weight;
+      else neutralWeight += weight;
+    });
+
+    const totalWeight = positiveWeight + neutralWeight + negativeWeight;
+
+    // Normalize weights to match total comment count for the UI display
+    const scaleFactor = analyzedComments.length / totalWeight;
 
     const distribution = {
-      positive,
-      neutral,
-      negative,
+      positive: Math.round(positiveWeight * scaleFactor),
+      neutral: Math.round(neutralWeight * scaleFactor),
+      negative: Math.round(negativeWeight * scaleFactor),
       total: analyzedComments.length,
+      uniqueUsers: allUniqueUsers.size,
     };
 
     // Generate timeline data
@@ -141,6 +175,13 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      if (apiError.code === "GEMINI_QUOTA_EXCEEDED") {
+        return NextResponse.json(
+          { error: "Gemini API quota exceeded. Please wait a minute before trying again." },
+          { status: 429 }
+        );
+      }
+
       return NextResponse.json(
         { error: apiError.message || "API error occurred" },
         { status: apiError.statusCode || 500 }
@@ -163,7 +204,7 @@ function generateTimeline(comments: AnalyzedComment[], videoPublishedAt: string)
   const totalHours = (now.getTime() - videoDate.getTime()) / (1000 * 60 * 60);
 
   // Create time windows
-  const windowCount = Math.min(9, Math.ceil(totalHours / 6)); // 6-hour windows, max 9 points
+  const windowCount = Math.max(1, Math.min(9, Math.ceil(totalHours / 6)));
   const windowSize = totalHours / windowCount;
 
   const timeline: TimeSeriesPoint[] = [];

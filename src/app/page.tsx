@@ -23,7 +23,7 @@ export default function Home() {
     setError(null);
     setAnalysis(null);
 
-    // Check cache first
+    /* Temporarily disabled cache to ensure logic updates are visible
     const cached = getCachedAnalysis(url);
     if (cached) {
       setAnalysis(cached);
@@ -31,6 +31,7 @@ export default function Home() {
       toast.success("Loaded from cache", { duration: 2000 });
       return;
     }
+    */
 
     toast.loading("Analyzing video comments...", { id: "analysis" });
 
@@ -40,7 +41,7 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ url, maxComments: 100 }),
+        body: JSON.stringify({ url, maxComments: 25 }),
       });
 
       if (!response.ok) {
